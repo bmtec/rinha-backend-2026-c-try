@@ -1,0 +1,7 @@
+/out/
+*.o
+*.a
+*.so
+*.dSYM/
+.DS_Store
+results.json

@@ -1,0 +1,98 @@
+# Rinha C runtime lab. Keeps the official topology shape: 1 LB + 2 APIs,
+# bridge network, resource sum within 1 CPU / 350 MB.
+
+services:
+  lb:
+    image: rinha-c-lab:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: api
+      platforms: ["linux/amd64"]
+    command: ["/usr/local/bin/lb"]
+    cpuset: "2,3"
+    environment:
+      LB_PORT: "9999"
+      LB_BACKLOG: "65535"
+      LB_ACCEPT_BATCH: "64"
+      API_SOCKETS: "/sockets/api1.sock,/sockets/api2.sock"
+    ports:
+      - "9999:9999"
+    volumes:
+      - sockets:/sockets
+    depends_on:
+      - api1
+      - api2
+    networks: [rinha]
+    ulimits:
+      nofile: { soft: 65535, hard: 65535 }
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits: { cpus: "0.01", memory: "8MB" }
+
+  api1:
+    image: rinha-c-lab:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: api
+      platforms: ["linux/amd64"]
+    command: ["/usr/local/bin/api"]
+    cpuset: "0"
+    environment:
+      API_SOCKET: "/sockets/api1.sock"
+      INDEX_PATH: "/data/index.bin"
+      NPROBE: "10"
+      CONN_POOL_CAP: "512"
+      EPOLL_SPIN_US: "0"
+      EPOLL_IDLE_US: "40"
+    volumes:
+      - sockets:/sockets
+    networks: [rinha]
+    ulimits:
+      nofile: { soft: 65535, hard: 65535 }
+      memlock: { soft: -1, hard: -1 }
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits: { cpus: "0.495", memory: "169MB" }
+
+  api2:
+    image: rinha-c-lab:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: api
+      platforms: ["linux/amd64"]
+    command: ["/usr/local/bin/api"]
+    cpuset: "1"
+    environment:
+      API_SOCKET: "/sockets/api2.sock"
+      INDEX_PATH: "/data/index.bin"
+      NPROBE: "10"
+      CONN_POOL_CAP: "512"
+      EPOLL_SPIN_US: "0"
+      EPOLL_IDLE_US: "40"
+    volumes:
+      - sockets:/sockets
+    networks: [rinha]
+    ulimits:
+      nofile: { soft: 65535, hard: 65535 }
+      memlock: { soft: -1, hard: -1 }
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits: { cpus: "0.495", memory: "169MB" }
+
+networks:
+  rinha:
+    driver: bridge
+
+volumes:
+  sockets:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: "size=4m,uid=0,gid=0,mode=0777"

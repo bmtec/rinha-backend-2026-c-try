@@ -1,0 +1,5 @@
+.git
+out
+.DS_Store
+*.tgz
+results.json
