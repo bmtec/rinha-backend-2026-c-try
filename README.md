@@ -1,4 +1,4 @@
-# Rinha Backend 2026 C Lab
+# Rinha Backend 2026 C Try
 
 Runtime-only C experiment based on the current bmtec topology:
 
@@ -17,4 +17,4 @@ docker compose build
 docker compose up -d
 ```
 
-This is not the official submission repo.
+Preview/submission branch keeps only `docker-compose.yml` and `info.json`.
