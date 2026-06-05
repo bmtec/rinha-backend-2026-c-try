@@ -8,6 +8,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/ioctl.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -18,10 +20,30 @@
 #define CONN_BUF_CAP (16 * 1024)
 #define LISTEN_TOKEN UINT64_MAX
 
+#ifndef SO_BUSY_POLL
+#define SO_BUSY_POLL 46
+#endif
+
+#ifndef EPIOCSPARAMS
+#ifndef EPOLL_IOC_TYPE
+#define EPOLL_IOC_TYPE 0x8A
+#endif
+struct epoll_params {
+    uint32_t busy_poll_usecs;
+    uint16_t busy_poll_budget;
+    uint8_t prefer_busy_poll;
+    uint8_t __pad;
+};
+#define EPIOCSPARAMS _IOW(EPOLL_IOC_TYPE, 0x01, struct epoll_params)
+#endif
+
 typedef struct {
     uint8_t buf[CONN_BUF_CAP];
     size_t len;
 } conn_t;
+
+static int g_socket_busy_poll_us = 0;
+static int g_socket_busy_poll_log_state = 0;
 
 typedef struct {
     conn_t **slots;
@@ -171,6 +193,57 @@ static size_t score_body(const uint8_t *body, size_t len, const ivf_index_t *ind
     return index_query_quantized(index, v, q, opts);
 }
 
+static void configure_epoll_busy_poll(int epfd) {
+    int busy_poll_us = env_int("EPOLL_BUSY_POLL_US", 0);
+    if (busy_poll_us <= 0) return;
+
+    int budget = env_int("EPOLL_BUSY_POLL_BUDGET", 8);
+    int prefer = env_int("EPOLL_PREFER_BUSY_POLL", 0);
+    if (budget < 1) budget = 1;
+    if (budget > UINT16_MAX) budget = UINT16_MAX;
+
+    struct epoll_params params = {
+        .busy_poll_usecs = (uint32_t)busy_poll_us,
+        .busy_poll_budget = (uint16_t)budget,
+        .prefer_busy_poll = (uint8_t)(prefer != 0),
+        .__pad = 0,
+    };
+
+    if (ioctl(epfd, EPIOCSPARAMS, &params) == 0) {
+        fprintf(stderr,
+                "[api-c] epoll busy-poll enabled usecs=%u budget=%u prefer=%u\n",
+                params.busy_poll_usecs,
+                params.busy_poll_budget,
+                params.prefer_busy_poll);
+    } else {
+        fprintf(stderr,
+                "[api-c] epoll busy-poll failed usecs=%u budget=%u prefer=%u errno=%d (%s)\n",
+                params.busy_poll_usecs,
+                params.busy_poll_budget,
+                params.prefer_busy_poll,
+                errno,
+                strerror(errno));
+    }
+}
+
+static void configure_socket_busy_poll(int fd) {
+    if (g_socket_busy_poll_us <= 0) return;
+    int value = g_socket_busy_poll_us;
+    if (setsockopt(fd, SOL_SOCKET, SO_BUSY_POLL, &value, sizeof(value)) == 0) {
+        if (g_socket_busy_poll_log_state == 0) {
+            g_socket_busy_poll_log_state = 1;
+            fprintf(stderr, "[api-c] socket busy-poll enabled usecs=%d\n", value);
+        }
+    } else if (g_socket_busy_poll_log_state == 0) {
+        g_socket_busy_poll_log_state = -1;
+        fprintf(stderr,
+                "[api-c] socket busy-poll failed usecs=%d errno=%d (%s)\n",
+                value,
+                errno,
+                strerror(errno));
+    }
+}
+
 static bool handle_client(int fd, conn_t *conn, const ivf_index_t *index, query_options_t opts) {
     for (;;) {
         if (conn->len == CONN_BUF_CAP) return false;
@@ -216,6 +289,9 @@ static bool handle_client(int fd, conn_t *conn, const ivf_index_t *index, query_
     return true;
 }
 
+// O epoll fica bloqueante por padrão, mas pode fazer um spin curto antes de
+// dormir. Em máquinas com CPU muito limitada, spin excessivo rouba orçamento da
+// busca vetorial; por isso a configuração fica controlada por ambiente.
 static int wait_events(int epfd, struct epoll_event *events, int spin_us, int idle_us) {
     if (spin_us <= 0) return epoll_wait_us(epfd, events, MAX_EVENTS, idle_us > 0 ? idle_us : -1);
     int n = epoll_wait_us(epfd, events, MAX_EVENTS, 0);
@@ -246,6 +322,8 @@ static bool is_control_fd(const int *controls, size_t controls_len, int fd, size
     return false;
 }
 
+// O LB aceita a conexão TCP e passa o descritor para a API. A API continua a
+// conversa HTTP no mesmo socket, evitando proxy HTTP e novo setup de conexão.
 static bool drain_control(int channel, int epfd, conn_table_t *conns, const ivf_index_t *index, query_options_t opts) {
     for (;;) {
         recvfd_result_t r = recv_fd_nb(channel);
@@ -253,6 +331,7 @@ static bool drain_control(int channel, int epfd, conn_table_t *conns, const ivf_
         if (r.kind == RECVFD_CLOSED) return false;
         int fd = r.fd;
         set_nonblocking(fd);
+        configure_socket_busy_poll(fd);
         struct epoll_event ev = {
             .events = EPOLLIN,
             .data.u64 = (uint64_t)fd,
@@ -271,6 +350,8 @@ static bool drain_control(int channel, int epfd, conn_table_t *conns, const ivf_
     }
 }
 
+// Exercita uma amostra de consultas no startup para aquecer branch predictor,
+// cache e páginas do índice antes do k6 começar a medir o caminho crítico.
 static void warm_up(const ivf_index_t *index, query_options_t opts) {
     size_t count = env_size("API_WARMUP_QUERIES", 2048);
     uint8_t acc = 0;
@@ -306,6 +387,7 @@ static void fd_worker(const char *socket_path, int backlog, const ivf_index_t *i
         perror("epoll_create1");
         exit(1);
     }
+    configure_epoll_busy_poll(epfd);
     struct epoll_event ev = {
         .events = EPOLLIN,
         .data.u64 = LISTEN_TOKEN,
@@ -322,6 +404,7 @@ static void fd_worker(const char *socket_path, int backlog, const ivf_index_t *i
     struct epoll_event events[MAX_EVENTS];
     int spin_us = env_int("EPOLL_SPIN_US", 30);
     int idle_us = env_int("EPOLL_IDLE_US", 80);
+    g_socket_busy_poll_us = env_int("SO_BUSY_POLL_US", 0);
 
     for (;;) {
         int n = wait_events(epfd, events, spin_us, idle_us);
@@ -405,6 +488,8 @@ int main(void) {
         return 1;
     }
     size_t len = (size_t)st.st_size;
+    // O índice fica em mmap read-only. madvise/mlock são best-effort: se o host
+    // negar, a aplicação continua correta, apenas com possível variação maior.
     uint8_t *data = mmap(NULL, len, PROT_READ, MAP_PRIVATE, fd, 0);
     close(fd);
     if (data == MAP_FAILED) {
@@ -414,6 +499,7 @@ int main(void) {
     madvise_best_effort(data, len);
     mlock_best_effort(data, len);
 
+    // Toca uma byte por página para reduzir page faults durante o teste.
     volatile uint8_t warm = 0;
     for (size_t off = 0; off < len; off += 4096) warm ^= data[off];
     asm volatile("" : "+r"(warm));

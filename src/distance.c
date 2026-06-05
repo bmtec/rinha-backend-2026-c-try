@@ -3,6 +3,9 @@
 #include <immintrin.h>
 #include <math.h>
 
+// O índice usa int16_t para reduzir memória e tráfego de cache. A escala 10000
+// mantém a precisão relevante dos vetores normalizados e permite distância AVX2
+// com _mm256_madd_epi16 no scan quente.
 int16_t quantize_one(float v) {
     float s = nearbyintf(v * SCALE_F);
     if (s < -32767.0f) s = -32767.0f;
@@ -33,6 +36,9 @@ int64_t squared_euclidean_i16(const int16_t a[DIMS], const int16_t b[DIMS]) {
     return hsum_madd_i64(d);
 }
 
+// Calcula um bloco inteiro contra a mesma query. Prefetch ajuda quando a célula
+// tem muitos vetores contíguos; manter os vetores agrupados por célula torna
+// esse acesso previsível para cache.
 void distances_to_slice_i16(const int16_t query[DIMS], const int16_t (*vectors)[DIMS], size_t len, int64_t *out) {
     const size_t prefetch_ahead = 4;
     __m256i qv = _mm256_loadu_si256((const __m256i *)query);
@@ -48,6 +54,9 @@ void distances_to_slice_i16(const int16_t query[DIMS], const int16_t (*vectors)[
     }
 }
 
+// Lower bound por caixa do bloco: se a query já está dentro do intervalo de uma
+// dimensão, aquela dimensão contribui zero. Isso permite pular blocos que não
+// conseguem melhorar o top-k atual.
 int64_t lower_bound_block_i16(const int16_t q[DIMS], const bounds_t *block) {
     __m256i qv = _mm256_loadu_si256((const __m256i *)q);
     __m256i lo = _mm256_loadu_si256((const __m256i *)block->min);

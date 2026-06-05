@@ -256,6 +256,9 @@ static float parse_float_ref(const uint8_t **p, const uint8_t *end) {
     return (float)value;
 }
 
+// O builder só consome o conjunto público de referências: vetor e rótulo.
+// Nenhum payload de teste entra aqui; o arquivo gerado é uma estrutura de busca
+// genérica para KNN sobre os vetores de referência.
 static void parse_references(const uint8_t *buf, size_t len, float (**vectors_out)[DIMS], uint8_t **labels_out, size_t *n_out) {
     const char vector_key[] = "\"vector\":[";
     const char label_key[] = "\"label\":\"";
@@ -357,6 +360,8 @@ static void assign_all(const float (*vectors)[DIMS], size_t n, const float (*cen
     free(jobs);
 }
 
+// K-means é feito no build da imagem, fora do limite de CPU do runtime. A
+// inicialização determinística torna o index.bin reproduzível entre máquinas.
 static float (*build_centroids(const float (*vectors)[DIMS], size_t n, size_t k, size_t iters))[DIMS] {
     float (*centroids)[DIMS] = aligned_alloc(32, k * sizeof(*centroids));
     uint32_t *idx = malloc(n * sizeof(*idx));
@@ -420,6 +425,9 @@ static int cmp_sort_item(const void *a, const void *b) {
     return 0;
 }
 
+// Dentro de cada célula, vetores mais próximos do centróide vêm primeiro. Isso
+// melhora localidade e tende a preencher o top-k cedo, aumentando os descartes
+// por bound durante o scan.
 static void sort_cells(float (*vectors)[DIMS], uint8_t *labels, const uint32_t *starts, const uint32_t *counts, const float (*centroids)[DIMS], size_t k) {
     uint32_t max_count = 0;
     for (size_t c = 0; c < k; c++) {
@@ -498,6 +506,8 @@ static bounds_t bounds_for(const float (*vectors)[DIMS], size_t start, size_t co
     return b;
 }
 
+// Formato final do index.bin: cabeçalho, centróides, células, bounds, vetores
+// quantizados e labels. As seções alinhadas reduzem penalidade em loads SIMD.
 static void write_index(const char *path, const float (*centroids)[DIMS], size_t k,
                         const uint32_t *starts, const uint32_t *counts,
                         const float (*vectors)[DIMS], const uint8_t *labels, size_t n) {

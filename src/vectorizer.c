@@ -103,11 +103,16 @@ static inline float mcc_risk(const uint8_t mcc[4]) {
     }
 }
 
+// Mantemos o vetor em float para o rerank final e em int16_t para o scan rápido.
+// As dimensões seguem a especificação do desafio; o valor -1 em dimensões sem
+// last_transaction é preservado porque também aparece nas referências.
 static inline void set_dim(float v[DIMS], int16_t q[DIMS], int idx, float value) {
     v[idx] = value;
     q[idx] = quantize_one(value);
 }
 
+// Converte a transação recebida em vetor. Essa é a única entrada de negócio da
+// consulta; a decisão final vem dos vizinhos no índice de referências.
 void vectorize_quantized(const payload_t *p, float v[DIMS], int16_t q[DIMS]) {
     for (int i = 0; i < DIMS; i++) {
         v[i] = 0.0f;

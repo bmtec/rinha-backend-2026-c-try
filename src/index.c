@@ -6,8 +6,8 @@
 
 typedef struct {
     int64_t dist;
-    // Internal vector/centroid index. Avoid naming this "payload" so it cannot
-    // be confused with the HTTP transaction payload from the challenge input.
+    // Índice interno de vetor/centróide. Evitamos chamar isso de "payload" para
+    // não confundir com o payload HTTP da transação recebido no desafio.
     uint32_t idx;
 } pair_i64_u32_t;
 
@@ -29,6 +29,8 @@ static inline size_t align_up(size_t off, size_t align) {
     return (off + align - 1u) & ~(align - 1u);
 }
 
+// Valida e fatia o mmap sem copiar o índice. Qualquer inconsistência derruba o
+// startup, porque no hot path não deve haver correção ou realocação estrutural.
 bool index_from_bytes(const uint8_t *data, size_t len, ivf_index_t *out) {
     if (len < HEADER_BYTES) return false;
     uint32_t magic = read_u32(data, 0);
@@ -184,6 +186,8 @@ static inline void insert_topk_f32(pair_f32_u8_t arr[KNN_K], size_t *len, float 
     }
 }
 
+// Scan de uma célula IVF. Os bounds por bloco são uma peneira barata: se o lower
+// bound do bloco já perde para o pior candidato atual, pulamos as distâncias.
 static void scan_centroid(const ivf_index_t *idx, const int16_t q[DIMS], size_t centroid,
                           pair_i64_u32_t cand[K_RERANK], size_t *filled, int64_t scratch[SCAN_CHUNK]) {
     cell_t cell = idx->cells[centroid];
@@ -283,6 +287,8 @@ static uint8_t repair_by_cell_bounds(const ivf_index_t *idx, const int16_t q[DIM
     return rerank_candidates(idx, v, cand, *filled, NULL);
 }
 
+// O scan usa int16_t por velocidade. O rerank final volta para float nos poucos
+// candidatos sobreviventes para preservar a decisão dos 5 vizinhos mais próximos.
 static uint8_t rerank_candidates(const ivf_index_t *idx, const float vector[DIMS],
                                  const pair_i64_u32_t cand[K_RERANK], size_t filled, uint8_t *bits_out) {
     pair_f32_u8_t top[KNN_K];
@@ -321,6 +327,9 @@ static inline bool is_ambiguous(uint8_t fraud, uint8_t min, uint8_t max) {
     return fraud >= min && fraud <= max;
 }
 
+// Estratégia de consulta: probe curto primeiro; se a votação cair na zona
+// ambígua configurada, expandimos para mais centróides e opcionalmente usamos
+// bounds de células. O objetivo é reduzir p99 sem sacrificar acurácia.
 uint8_t index_query_quantized(const ivf_index_t *idx, const float v[DIMS], const int16_t q[DIMS], query_options_t opts) {
     size_t nc = idx->num_centroids < MAX_CENTROIDS ? idx->num_centroids : MAX_CENTROIDS;
     size_t probe = opts.nprobe;

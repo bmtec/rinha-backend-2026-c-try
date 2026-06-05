@@ -1,5 +1,5 @@
-# Rinha C runtime lab. Keeps the official topology shape: 1 LB + 2 APIs,
-# bridge network, resource sum within 1 CPU / 350 MB.
+# Runtime C para a Rinha. Mantém a topologia exigida: 1 LB + 2 APIs,
+# rede bridge e soma de recursos dentro de 1 CPU / 350 MB.
 
 services:
   lb:
@@ -51,6 +51,10 @@ services:
       CONN_POOL_CAP: "512"
       EPOLL_SPIN_US: "0"
       EPOLL_IDLE_US: "40"
+      EPOLL_BUSY_POLL_US: "5"
+      EPOLL_BUSY_POLL_BUDGET: "8"
+      EPOLL_PREFER_BUSY_POLL: "0"
+      SO_BUSY_POLL_US: "0"
     volumes:
       - sockets:/sockets
     networks: [rinha]
@@ -82,6 +86,10 @@ services:
       CONN_POOL_CAP: "512"
       EPOLL_SPIN_US: "0"
       EPOLL_IDLE_US: "40"
+      EPOLL_BUSY_POLL_US: "5"
+      EPOLL_BUSY_POLL_BUDGET: "8"
+      EPOLL_PREFER_BUSY_POLL: "0"
+      SO_BUSY_POLL_US: "0"
     volumes:
       - sockets:/sockets
     networks: [rinha]

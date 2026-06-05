@@ -17,7 +17,7 @@ $(OUT)/api: $(COMMON) src/api.c src/rinha.h | $(OUT)
 	$(CC) $(CFLAGS) $(COMMON) src/api.c -o $@ $(LDFLAGS)
 
 $(OUT)/lb: src/net.c src/lb.c src/rinha.h | $(OUT)
-	$(CC) $(CFLAGS) src/net.c src/lb.c -o $@ $(LDFLAGS)
+	$(CC) $(CFLAGS) src/net.c src/lb.c -o $@ $(LDFLAGS) -pthread
 
 $(OUT)/builder: src/distance.c src/builder.c src/rinha.h | $(OUT)
 	$(CC) $(BUILDER_CFLAGS) src/distance.c src/builder.c -o $@ $(LDFLAGS) -pthread -lz -lm

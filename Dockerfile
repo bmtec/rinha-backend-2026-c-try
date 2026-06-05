@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.6
 #
-# C runtime lab. The index is generated inside this repository from the public
-# reference vectors during the image build.
+# Runtime em C. O índice é gerado durante o build a partir das referências
+# públicas do desafio, deixando o container final pronto para atender requisições.
 
 FROM --platform=linux/amd64 gcc:14-bookworm AS build
 WORKDIR /app
@@ -18,6 +18,8 @@ ARG KMEANS_ITERS=15
 ARG BUILDER_THREADS=0
 ARG INIT_MODE=rust
 COPY resources/references.json.gz /resources/references.json.gz
+# Gera /output/index.bin offline. Esta etapa pode gastar CPU/memória porque não
+# roda no ambiente limitado da submissão; as APIs só fazem mmap do resultado.
 RUN mkdir -p /output \
  && CENTROIDS="$CENTROIDS" KMEANS_ITERS="$KMEANS_ITERS" BUILDER_THREADS="$BUILDER_THREADS" INIT_MODE="$INIT_MODE" \
     /app/out/builder /resources/references.json.gz /output/index.bin

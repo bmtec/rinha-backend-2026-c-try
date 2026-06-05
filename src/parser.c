@@ -124,6 +124,9 @@ static bool parse_string_array(const uint8_t *b, size_t len, size_t i, payload_t
     }
 }
 
+// Parser especializado para o formato do desafio. Ele extrai somente os campos
+// necessários para montar o vetor; não mantém cópia do JSON inteiro e não usa
+// lookup por payload de teste.
 bool parse_payload(const uint8_t *buf, size_t len, payload_t *out) {
     memset(out, 0, sizeof(*out));
 

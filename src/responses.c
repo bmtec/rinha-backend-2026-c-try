@@ -1,5 +1,8 @@
 #include "rinha.h"
 
+// O fraud_score só pode assumir 6 valores porque vem de 5 vizinhos. Montar a
+// resposta HTTP inteira de antemão evita snprintf, heap e cálculo de tamanho no
+// hot path.
 static const uint8_t R0[] = "HTTP/1.1 200 OK\r\nContent-Length:35\r\n\r\n{\"approved\":true,\"fraud_score\":0.0}";
 static const uint8_t R1[] = "HTTP/1.1 200 OK\r\nContent-Length:35\r\n\r\n{\"approved\":true,\"fraud_score\":0.2}";
 static const uint8_t R2[] = "HTTP/1.1 200 OK\r\nContent-Length:35\r\n\r\n{\"approved\":true,\"fraud_score\":0.4}";

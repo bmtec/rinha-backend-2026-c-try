@@ -72,6 +72,8 @@ typedef struct {
     int16_t max[DIMS];
 } bounds_t;
 
+// O arquivo de índice é lido por mmap e acessado por ponteiros para evitar
+// cópias no startup. As seções ficam alinhadas para favorecer loads AVX2.
 typedef struct {
     size_t num_vectors;
     size_t num_centroids;
@@ -84,6 +86,8 @@ typedef struct {
     size_t blocks_len;
 } ivf_index_t;
 
+// A busca começa com nprobe curto e só expande em casos ambíguos. Isso preserva
+// recall onde importa sem pagar o custo da busca larga em toda requisição.
 typedef struct {
     size_t nprobe;
     size_t repair_probe;
