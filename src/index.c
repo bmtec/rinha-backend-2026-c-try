@@ -14,6 +14,9 @@ typedef struct {
     uint8_t label;
 } pair_f32_u8_t;
 
+static uint8_t rerank_candidates(const ivf_index_t *idx, const float vector[DIMS],
+                                 const pair_i64_u32_t cand[K_RERANK], size_t filled, uint8_t *bits_out);
+
 static inline uint32_t read_u32(const uint8_t *b, size_t off) {
     uint32_t v;
     memcpy(&v, b + off, sizeof(v));
@@ -220,6 +223,64 @@ static void scan_centroid_range(const ivf_index_t *idx, const int16_t q[DIMS],
     }
 }
 
+static inline void mark_centroid(uint64_t words[MAX_CENTROIDS / 64], size_t c) {
+    words[c >> 6] |= 1ull << (c & 63u);
+}
+
+static inline bool centroid_marked(const uint64_t words[MAX_CENTROIDS / 64], size_t c) {
+    return (words[c >> 6] & (1ull << (c & 63u))) != 0;
+}
+
+static void insert_repair_cell(pair_i64_u32_t arr[MAX_REPAIR_CANDIDATES], size_t *len, size_t cap, int64_t dist, uint32_t idx) {
+    if (cap == 0) return;
+    if (*len < cap) {
+        size_t i = *len;
+        while (i > 0 && arr[i - 1].dist > dist) {
+            arr[i] = arr[i - 1];
+            i--;
+        }
+        arr[i].dist = dist;
+        arr[i].payload = idx;
+        (*len)++;
+    } else if (dist < arr[cap - 1].dist) {
+        size_t i = cap - 1;
+        while (i > 0 && arr[i - 1].dist > dist) {
+            arr[i] = arr[i - 1];
+            i--;
+        }
+        arr[i].dist = dist;
+        arr[i].payload = idx;
+    }
+}
+
+static uint8_t repair_by_cell_bounds(const ivf_index_t *idx, const int16_t q[DIMS], const float v[DIMS],
+                                     const pair_i64_u32_t best[MAX_NPROBE], size_t scanned_count,
+                                     pair_i64_u32_t cand[K_RERANK], size_t *filled, int64_t scratch[SCAN_CHUNK],
+                                     size_t repair_candidates) {
+    if (!idx->cell_bounds || repair_candidates == 0) return rerank_candidates(idx, v, cand, *filled, NULL);
+    size_t nc = idx->num_centroids < MAX_CENTROIDS ? idx->num_centroids : MAX_CENTROIDS;
+    if (repair_candidates > MAX_REPAIR_CANDIDATES) repair_candidates = MAX_REPAIR_CANDIDATES;
+
+    uint64_t scanned[MAX_CENTROIDS / 64] = {0};
+    for (size_t i = 0; i < scanned_count; i++) mark_centroid(scanned, best[i].payload);
+
+    pair_i64_u32_t repairs[MAX_REPAIR_CANDIDATES];
+    for (size_t i = 0; i < repair_candidates; i++) {
+        repairs[i].dist = INT64_MAX;
+        repairs[i].payload = 0;
+    }
+    size_t repair_len = 0;
+    for (size_t c = 0; c < nc; c++) {
+        if (centroid_marked(scanned, c)) continue;
+        int64_t bound = lower_bound_block_i16(q, &idx->cell_bounds[c]);
+        insert_repair_cell(repairs, &repair_len, repair_candidates, bound, (uint32_t)c);
+    }
+    for (size_t i = 0; i < repair_len; i++) {
+        scan_centroid(idx, q, repairs[i].payload, cand, filled, scratch);
+    }
+    return rerank_candidates(idx, v, cand, *filled, NULL);
+}
+
 static uint8_t rerank_candidates(const ivf_index_t *idx, const float vector[DIMS],
                                  const pair_i64_u32_t cand[K_RERANK], size_t filled, uint8_t *bits_out) {
     pair_f32_u8_t top[KNN_K];
@@ -254,32 +315,8 @@ static uint8_t rerank_candidates(const ivf_index_t *idx, const float vector[DIMS
     return fraud;
 }
 
-static inline bool is_risky_pattern(size_t probe, uint8_t bits, int64_t centroid_probe, int64_t centroid_next) {
-    int64_t gap = centroid_next - centroid_probe;
-    if (probe == 10) {
-        switch (bits) {
-            case 0b00110: return gap <= 500000;
-            case 0b01010: return gap <= 500000;
-            case 0b01100: return gap <= 600000;
-            case 0b10010: return gap <= 1200000;
-            case 0b10011: return gap <= 500000;
-            case 0b10110: return gap <= 700000;
-            case 0b11100: return gap <= 150000;
-            default: return false;
-        }
-    }
-    if (probe == 12) {
-        switch (bits) {
-            case 0b00110: return gap <= 1600000;
-            case 0b01010: return gap <= 3800000;
-            case 0b01100: return gap <= 1000000;
-            case 0b10010: return gap <= 1800000;
-            case 0b10011: return gap <= 500000;
-            case 0b11100: return gap <= 150000;
-            default: return false;
-        }
-    }
-    return false;
+static inline bool is_ambiguous(uint8_t fraud, uint8_t min, uint8_t max) {
+    return fraud >= min && fraud <= max;
 }
 
 uint8_t index_query_quantized(const ivf_index_t *idx, const float v[DIMS], const int16_t q[DIMS], query_options_t opts) {
@@ -288,9 +325,11 @@ uint8_t index_query_quantized(const ivf_index_t *idx, const float v[DIMS], const
     if (probe < 1) probe = 1;
     if (probe > MAX_NPROBE) probe = MAX_NPROBE;
     if (probe > nc) probe = nc;
-    size_t adaptive_probe = (probe == 10 || probe == 12) ? (48 < nc ? 48 : nc) : probe;
-    size_t initial_probe = adaptive_probe > probe ? probe + 1 : probe;
-    if (initial_probe > adaptive_probe) initial_probe = adaptive_probe;
+    size_t adaptive_probe = opts.repair_probe;
+    if (adaptive_probe < probe) adaptive_probe = probe;
+    if (adaptive_probe > MAX_NPROBE) adaptive_probe = MAX_NPROBE;
+    if (adaptive_probe > nc) adaptive_probe = nc;
+    size_t initial_probe = probe;
 
     int64_t cdist[MAX_CENTROIDS];
     pair_i64_u32_t best[MAX_NPROBE];
@@ -311,14 +350,26 @@ uint8_t index_query_quantized(const ivf_index_t *idx, const float v[DIMS], const
 
     size_t filled = 0;
     scan_centroid_range(idx, q, best, 0, probe, cand, &filled, scratch);
-    uint8_t bits = 0;
-    uint8_t fraud = rerank_candidates(idx, v, cand, filled, &bits);
+    uint8_t fraud = rerank_candidates(idx, v, cand, filled, NULL);
 
-    if (adaptive_probe > probe && initial_probe > probe &&
-        is_risky_pattern(probe, bits, best[probe - 1].dist, best[probe].dist)) {
+    if (adaptive_probe > probe && is_ambiguous(fraud, opts.repair_min, opts.repair_max)) {
         fill_best_centroids(cdist, nc, adaptive_probe, best);
         scan_centroid_range(idx, q, best, probe, adaptive_probe, cand, &filled, scratch);
         fraud = rerank_candidates(idx, v, cand, filled, NULL);
+    }
+
+    if (opts.repair_candidates > 0 && is_ambiguous(fraud, opts.repair_min, opts.repair_max)) {
+        fraud = repair_by_cell_bounds(
+            idx,
+            q,
+            v,
+            best,
+            adaptive_probe,
+            cand,
+            &filled,
+            scratch,
+            opts.repair_candidates
+        );
     }
 
     return fraud;

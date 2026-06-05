@@ -376,6 +376,17 @@ int main(void) {
     const char *index_path = getenv("INDEX_PATH");
     if (!index_path || !*index_path) index_path = "/data/index.bin";
     int nprobe = env_int("NPROBE", 10);
+    int repair_probe = env_int("REPAIR_PROBE", 48);
+    int repair_candidates = env_int("REPAIR_CANDIDATES", 0);
+    int repair_min = env_int("REPAIR_MIN", 1);
+    int repair_max = env_int("REPAIR_MAX", 4);
+    if (repair_probe < nprobe) repair_probe = nprobe;
+    if (repair_candidates < 0) repair_candidates = 0;
+    if (repair_candidates > (int)MAX_REPAIR_CANDIDATES) repair_candidates = (int)MAX_REPAIR_CANDIDATES;
+    if (repair_min < 0) repair_min = 0;
+    if (repair_min > KNN_K) repair_min = KNN_K;
+    if (repair_max < repair_min) repair_max = repair_min;
+    if (repair_max > KNN_K) repair_max = KNN_K;
     int backlog = env_int("LISTEN_BACKLOG", 4096);
     const char *api_socket = getenv("API_SOCKET");
     if (!api_socket || !*api_socket) {
@@ -412,10 +423,24 @@ int main(void) {
         fprintf(stderr, "[api-c] invalid index\n");
         return 1;
     }
-    query_options_t opts = {.nprobe = (size_t)nprobe};
+    query_options_t opts = {
+        .nprobe = (size_t)nprobe,
+        .repair_probe = (size_t)repair_probe,
+        .repair_candidates = (size_t)repair_candidates,
+        .repair_min = (uint8_t)repair_min,
+        .repair_max = (uint8_t)repair_max,
+    };
     warm_up(&index, opts);
 
-    fprintf(stderr, "[api-c] index %zu vectors, nprobe=%zu, socket=%s\n", index.num_vectors, opts.nprobe, api_socket);
+    fprintf(stderr,
+            "[api-c] index %zu vectors, nprobe=%zu, repair=%zu+bbox%zu/%u-%u, socket=%s\n",
+            index.num_vectors,
+            opts.nprobe,
+            opts.repair_probe,
+            opts.repair_candidates,
+            opts.repair_min,
+            opts.repair_max,
+            api_socket);
     fd_worker(api_socket, backlog, &index, opts);
     return 0;
 }

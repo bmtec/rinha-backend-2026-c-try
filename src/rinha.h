@@ -28,8 +28,9 @@
 #define HEADER_BYTES 20u
 #define SECTION_ALIGN 32u
 #define BLOCK_SIZE 128u
-#define MAX_NPROBE 64u
+#define MAX_NPROBE 128u
 #define MAX_CENTROIDS 2048u
+#define MAX_REPAIR_CANDIDATES 256u
 #define SCAN_CHUNK BLOCK_SIZE
 #define K_RERANK 5u
 
@@ -85,6 +86,10 @@ typedef struct {
 
 typedef struct {
     size_t nprobe;
+    size_t repair_probe;
+    size_t repair_candidates;
+    uint8_t repair_min;
+    uint8_t repair_max;
 } query_options_t;
 
 typedef enum {
