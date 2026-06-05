@@ -6,7 +6,9 @@
 
 typedef struct {
     int64_t dist;
-    uint32_t payload;
+    // Internal vector/centroid index. Avoid naming this "payload" so it cannot
+    // be confused with the HTTP transaction payload from the challenge input.
+    uint32_t idx;
 } pair_i64_u32_t;
 
 typedef struct {
@@ -86,7 +88,7 @@ bool index_from_bytes(const uint8_t *data, size_t len, ivf_index_t *out) {
 }
 
 static inline bool centroid_less(pair_i64_u32_t a, pair_i64_u32_t b) {
-    return a.dist < b.dist || (a.dist == b.dist && a.payload < b.payload);
+    return a.dist < b.dist || (a.dist == b.dist && a.idx < b.idx);
 }
 
 static void sort_centroids(pair_i64_u32_t best[MAX_NPROBE], size_t cap) {
@@ -104,12 +106,12 @@ static void sort_centroids(pair_i64_u32_t best[MAX_NPROBE], size_t cap) {
 static void worst_centroid(const pair_i64_u32_t best[MAX_NPROBE], size_t cap, size_t *idx, int64_t *dist) {
     size_t worst_idx = 0;
     int64_t worst_dist = best[0].dist;
-    uint32_t worst_payload = best[0].payload;
+    uint32_t worst_idx_value = best[0].idx;
     for (size_t i = 1; i < cap; i++) {
-        if (best[i].dist > worst_dist || (best[i].dist == worst_dist && best[i].payload > worst_payload)) {
+        if (best[i].dist > worst_dist || (best[i].dist == worst_dist && best[i].idx > worst_idx_value)) {
             worst_idx = i;
             worst_dist = best[i].dist;
-            worst_payload = best[i].payload;
+            worst_idx_value = best[i].idx;
         }
     }
     *idx = worst_idx;
@@ -124,7 +126,7 @@ static void fill_best_centroids(const int64_t *cdist, size_t len, size_t cap, pa
     int64_t worst_dist = INT64_MIN;
     for (size_t i = 0; i < cap; i++) {
         best[i].dist = cdist[i];
-        best[i].payload = (uint32_t)i;
+        best[i].idx = (uint32_t)i;
         if (cdist[i] >= worst_dist) {
             worst_idx = i;
             worst_dist = cdist[i];
@@ -133,7 +135,7 @@ static void fill_best_centroids(const int64_t *cdist, size_t len, size_t cap, pa
     for (size_t i = cap; i < len; i++) {
         if (cdist[i] < worst_dist) {
             best[worst_idx].dist = cdist[i];
-            best[worst_idx].payload = (uint32_t)i;
+            best[worst_idx].idx = (uint32_t)i;
             worst_centroid(best, cap, &worst_idx, &worst_dist);
         }
     }
@@ -148,7 +150,7 @@ static inline void insert_cand(pair_i64_u32_t arr[K_RERANK], size_t *len, int64_
             i--;
         }
         arr[i].dist = dist;
-        arr[i].payload = idx;
+        arr[i].idx = idx;
         (*len)++;
     } else if (dist < arr[K_RERANK - 1].dist) {
         size_t i = K_RERANK - 1;
@@ -157,7 +159,7 @@ static inline void insert_cand(pair_i64_u32_t arr[K_RERANK], size_t *len, int64_
             i--;
         }
         arr[i].dist = dist;
-        arr[i].payload = idx;
+        arr[i].idx = idx;
     }
 }
 
@@ -219,7 +221,7 @@ static void scan_centroid_range(const ivf_index_t *idx, const int16_t q[DIMS],
                                 const pair_i64_u32_t best[MAX_NPROBE], size_t from, size_t to,
                                 pair_i64_u32_t cand[K_RERANK], size_t *filled, int64_t scratch[SCAN_CHUNK]) {
     for (size_t b = from; b < to; b++) {
-        scan_centroid(idx, q, best[b].payload, cand, filled, scratch);
+        scan_centroid(idx, q, best[b].idx, cand, filled, scratch);
     }
 }
 
@@ -240,7 +242,7 @@ static void insert_repair_cell(pair_i64_u32_t arr[MAX_REPAIR_CANDIDATES], size_t
             i--;
         }
         arr[i].dist = dist;
-        arr[i].payload = idx;
+        arr[i].idx = idx;
         (*len)++;
     } else if (dist < arr[cap - 1].dist) {
         size_t i = cap - 1;
@@ -249,7 +251,7 @@ static void insert_repair_cell(pair_i64_u32_t arr[MAX_REPAIR_CANDIDATES], size_t
             i--;
         }
         arr[i].dist = dist;
-        arr[i].payload = idx;
+        arr[i].idx = idx;
     }
 }
 
@@ -262,12 +264,12 @@ static uint8_t repair_by_cell_bounds(const ivf_index_t *idx, const int16_t q[DIM
     if (repair_candidates > MAX_REPAIR_CANDIDATES) repair_candidates = MAX_REPAIR_CANDIDATES;
 
     uint64_t scanned[MAX_CENTROIDS / 64] = {0};
-    for (size_t i = 0; i < scanned_count; i++) mark_centroid(scanned, best[i].payload);
+    for (size_t i = 0; i < scanned_count; i++) mark_centroid(scanned, best[i].idx);
 
     pair_i64_u32_t repairs[MAX_REPAIR_CANDIDATES];
     for (size_t i = 0; i < repair_candidates; i++) {
         repairs[i].dist = INT64_MAX;
-        repairs[i].payload = 0;
+        repairs[i].idx = 0;
     }
     size_t repair_len = 0;
     for (size_t c = 0; c < nc; c++) {
@@ -276,7 +278,7 @@ static uint8_t repair_by_cell_bounds(const ivf_index_t *idx, const int16_t q[DIM
         insert_repair_cell(repairs, &repair_len, repair_candidates, bound, (uint32_t)c);
     }
     for (size_t i = 0; i < repair_len; i++) {
-        scan_centroid(idx, q, repairs[i].payload, cand, filled, scratch);
+        scan_centroid(idx, q, repairs[i].idx, cand, filled, scratch);
     }
     return rerank_candidates(idx, v, cand, *filled, NULL);
 }
@@ -290,7 +292,7 @@ static uint8_t rerank_candidates(const ivf_index_t *idx, const float vector[DIMS
     }
     size_t tfill = 0;
     for (size_t c = 0; c < filled; c++) {
-        size_t vi = cand[c].payload;
+        size_t vi = cand[c].idx;
         const int16_t *vec = idx->vectors[vi];
         float d = 0.0f;
         for (size_t i = 0; i < DIMS; i++) {
@@ -338,11 +340,11 @@ uint8_t index_query_quantized(const ivf_index_t *idx, const float v[DIMS], const
 
     for (size_t i = 0; i < MAX_NPROBE; i++) {
         best[i].dist = INT64_MAX;
-        best[i].payload = 0;
+        best[i].idx = 0;
     }
     for (size_t i = 0; i < K_RERANK; i++) {
         cand[i].dist = INT64_MAX;
-        cand[i].payload = 0;
+        cand[i].idx = 0;
     }
 
     distances_to_slice_i16(q, idx->centroids, nc, cdist);
