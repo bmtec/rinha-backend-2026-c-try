@@ -10,6 +10,7 @@ services:
       target: api
       platforms: ["linux/amd64"]
     command: ["/usr/local/bin/lb"]
+    cpuset: "1,3"
     environment:
       LB_PORT: "9999"
       LB_BACKLOG: "65535"
@@ -38,6 +39,7 @@ services:
       target: api
       platforms: ["linux/amd64"]
     command: ["/usr/local/bin/api"]
+    cpuset: "0"
     environment:
       API_SOCKET: "/sockets/api1.sock"
       INDEX_PATH: "/data/index.bin"
@@ -72,6 +74,7 @@ services:
       target: api
       platforms: ["linux/amd64"]
     command: ["/usr/local/bin/api"]
+    cpuset: "2"
     environment:
       API_SOCKET: "/sockets/api2.sock"
       INDEX_PATH: "/data/index.bin"
